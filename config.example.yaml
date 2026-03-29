@@ -1,0 +1,178 @@
+# llm_swap example configuration
+# Copy this file to config.yaml and fill in your actual API keys and settings.
+# The proxy reads the config file path from the --config CLI flag (default: config.yaml).
+
+# ---------------------------------------------------------------------------
+# Server settings
+# ---------------------------------------------------------------------------
+server:
+  host: "127.0.0.1"        # Interface to bind on. Use 0.0.0.0 to expose on all interfaces.
+  port: 8000               # TCP port the proxy listens on.
+  log_level: "info"        # Uvicorn log level: debug | info | warning | error | critical
+  request_timeout: 120     # Seconds before an upstream request is abandoned.
+
+# ---------------------------------------------------------------------------
+# Structured request logging
+# ---------------------------------------------------------------------------
+logging:
+  enabled: true
+  log_file: "llm_swap.log"  # Set to null or omit to log to stdout only.
+  log_format: "json"        # json | text
+  log_request_body: false   # Set true to record full prompt text (can be large / sensitive).
+  log_response_body: false  # Set true to record full completion text.
+
+# ---------------------------------------------------------------------------
+# Provider health checks
+# ---------------------------------------------------------------------------
+health_check:
+  enabled: true
+  interval_seconds: 30     # How often to ping each provider.
+  timeout_seconds: 5       # Timeout for a single health-check request.
+  unhealthy_threshold: 2   # Consecutive failures before marking a provider degraded.
+  healthy_threshold: 1     # Consecutive successes before restoring a degraded provider.
+
+# ---------------------------------------------------------------------------
+# Backend providers
+# Each provider must have a unique `name` used in routing rules below.
+# ---------------------------------------------------------------------------
+providers:
+
+  - name: openai
+    type: openai            # Supported types: openai | anthropic | mistral | ollama
+    api_key: "${OPENAI_API_KEY}"   # Environment-variable substitution is supported.
+    base_url: "https://api.openai.com/v1"   # Override only if using a custom endpoint.
+    timeout: 60
+    max_retries: 2
+    # Extra headers forwarded to the provider (optional).
+    # headers:
+    #   X-Custom-Header: "value"
+
+  - name: anthropic
+    type: anthropic
+    api_key: "${ANTHROPIC_API_KEY}"
+    base_url: "https://api.anthropic.com"   # The adapter automatically sets the correct path.
+    timeout: 90
+    max_retries: 2
+
+  - name: mistral
+    type: mistral
+    api_key: "${MISTRAL_API_KEY}"
+    base_url: "https://api.mistral.ai/v1"
+    timeout: 60
+    max_retries: 2
+
+  - name: ollama
+    type: ollama
+    api_key: null            # Ollama does not require an API key.
+    base_url: "http://localhost:11434"   # Default Ollama address.
+    timeout: 120
+    max_retries: 1
+
+# ---------------------------------------------------------------------------
+# Model aliases and routing rules
+#
+# Each alias maps a logical name (e.g. "fast") to an ordered list of providers.
+# The router tries providers in priority order (lowest number = highest priority)
+# and falls back to the next one on error.
+# ---------------------------------------------------------------------------
+routing:
+
+  # Default provider used when no alias matches and no explicit model routing applies.
+  default_provider: openai
+
+  # Strategy for selecting among providers at the same priority level.
+  # Options:
+  #   priority  - always try the highest-priority provider first (default)
+  #   round_robin - distribute load evenly across same-priority providers
+  strategy: priority
+
+  aliases:
+
+    # "smart" — best quality, higher cost; falls back to Mistral if OpenAI is down
+    - alias: smart
+      backends:
+        - provider: openai
+          model: gpt-4o
+          priority: 1
+        - provider: anthropic
+          model: claude-3-5-sonnet-20241022
+          priority: 2
+        - provider: mistral
+          model: mistral-large-latest
+          priority: 3
+
+    # "fast" — lowest latency; uses GPT-4o-mini or falls back to Mistral small
+    - alias: fast
+      backends:
+        - provider: openai
+          model: gpt-4o-mini
+          priority: 1
+        - provider: mistral
+          model: mistral-small-latest
+          priority: 2
+
+    # "cheap" — most cost-effective; prefer Ollama local then Mistral
+    - alias: cheap
+      backends:
+        - provider: ollama
+          model: llama3
+          priority: 1
+        - provider: mistral
+          model: open-mistral-7b
+          priority: 2
+
+    # "local" — always route to local Ollama (no cloud fallback)
+    - alias: local
+      backends:
+        - provider: ollama
+          model: llama3
+          priority: 1
+
+    # "claude" — direct alias to Anthropic's Claude Sonnet
+    - alias: claude
+      backends:
+        - provider: anthropic
+          model: claude-3-5-sonnet-20241022
+          priority: 1
+        - provider: anthropic
+          model: claude-3-haiku-20240307
+          priority: 2
+
+  # ---------------------------------------------------------------------------
+  # Direct model-name routing (no alias needed)
+  #
+  # If a client sends model="gpt-4o" the proxy can route it to a specific
+  # provider without requiring an alias. Useful when you want transparent
+  # passthrough for known model names while still supporting fallback.
+  # ---------------------------------------------------------------------------
+  model_routes:
+
+    - model: gpt-4o
+      backends:
+        - provider: openai
+          model: gpt-4o
+          priority: 1
+
+    - model: gpt-4o-mini
+      backends:
+        - provider: openai
+          model: gpt-4o-mini
+          priority: 1
+
+    - model: claude-3-5-sonnet-20241022
+      backends:
+        - provider: anthropic
+          model: claude-3-5-sonnet-20241022
+          priority: 1
+
+    - model: mistral-large-latest
+      backends:
+        - provider: mistral
+          model: mistral-large-latest
+          priority: 1
+
+    - model: llama3
+      backends:
+        - provider: ollama
+          model: llama3
+          priority: 1
